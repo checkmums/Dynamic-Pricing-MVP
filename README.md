@@ -1,4 +1,4 @@
-markdown
+
 # Dynamic Pricing MVP
 
 ## Описание проекта
