@@ -11,7 +11,9 @@ data = []
 start_date = datetime(2024, 1, 1)
 
 for product in products:
+    # Базовая цена и себестоимость
     base_price = np.random.choice([100, 200, 300])
+    cost = base_price * np.random.uniform(0.5, 0.7)  # себестоимость 50-70% от цены
     
     for day in range(n_days):
         date = start_date + timedelta(days=day)
@@ -27,6 +29,7 @@ for product in products:
             'product': product,
             'our_price': round(our_price, 2),
             'competitor_price': round(competitor_price, 2),
+            'cost': round(cost, 2),  # НОВОЕ поле
             'sales': sales
         })
 

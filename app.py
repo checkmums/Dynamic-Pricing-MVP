@@ -4,7 +4,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from sklearn.linear_model import LinearRegression
-
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -13,13 +12,16 @@ st.set_page_config(page_title="Dynamic Pricing MVP", layout="wide")
 st.title("🚀 Алгоритм динамического ценообразования")
 st.markdown("---")
 
-# Функция для умного расчёта оптимальных цен
+# Функция для умного расчёта оптимальных цен (оптимизация ПРИБЫЛИ)
 def calculate_optimal_prices(df):
-    """Рассчитывает оптимальные цены на основе линейной регрессии"""
+    """Рассчитывает оптимальные цены на основе линейной регрессии с учётом себестоимости"""
     results = []
     
     for product in df['product'].unique():
         product_df = df[df['product'] == product].copy()
+        
+        # Берём себестоимость (она одинаковая для товара)
+        cost = product_df['cost'].iloc[0]
         
         # Обучаем модель
         X = product_df[['our_price', 'competitor_price']]
@@ -37,10 +39,12 @@ def calculate_optimal_prices(df):
         
         # Если зависимость корректная (цена снижает спрос)
         if b_price < 0:
-            optimal_price = -(a + c_competitor * avg_competitor_price) / (2 * b_price)
+            # Оптимизируем ПРИБЫЛЬ: (price - cost) * (a + b*price + c*comp)
+            # Оптимальная цена: price_opt = (a - b*cost + c*comp) / (-2*b)
+            optimal_price = (a - b_price * cost + c_competitor * avg_competitor_price) / (-2 * b_price)
             
             # Ограничиваем цену разумными пределами
-            min_price = product_df['our_price'].min() * 0.7
+            min_price = cost * 1.1  # не ниже себестоимости + 10%
             max_price = product_df['our_price'].max() * 1.3
             optimal_price = max(min_price, min(max_price, optimal_price))
         else:
@@ -49,6 +53,7 @@ def calculate_optimal_prices(df):
         
         results.append({
             'product': product,
+            'cost': round(cost, 2),
             'optimal_price': round(optimal_price, 2)
         })
     
@@ -68,6 +73,9 @@ with st.sidebar:
             
             for product in products:
                 base_price = np.random.choice([100, 200, 300])
+                # Себестоимость 50-70% от цены
+                cost = base_price * np.random.uniform(0.5, 0.7)
+                
                 for day in range(n_days):
                     date = start_date + timedelta(days=day)
                     competitor_price = base_price * np.random.uniform(0.8, 1.2)
@@ -78,7 +86,8 @@ with st.sidebar:
                     data.append({
                         'date': date, 'product': product, 
                         'our_price': round(our_price, 2),
-                        'competitor_price': round(competitor_price, 2), 
+                        'competitor_price': round(competitor_price, 2),
+                        'cost': round(cost, 2),
                         'sales': sales
                     })
             
@@ -94,20 +103,21 @@ if 'data' not in st.session_state:
 df = st.session_state['data']
 
 # Вкладки
-tab1, tab2, tab3 = st.tabs(["📊 Данные", "💰 Рекомендации (Умный алгоритм)", "📈 Графики"])
+tab1, tab2, tab3 = st.tabs(["📊 Данные", "💰 Рекомендации (Прибыль)", "📈 Графики"])
 
 with tab1:
     st.subheader("История продаж")
     st.dataframe(df.head(50))
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Всего записей", len(df))
     col2.metric("Товаров", df['product'].nunique())
     col3.metric("Средние продажи", f"{df['sales'].mean():.0f}")
+    col4.metric("Средняя себестоимость", f"{df['cost'].mean():.0f}")
 
 with tab2:
     st.subheader("📊 Рекомендации на основе МАШИННОГО ОБУЧЕНИЯ")
-    st.caption("Алгоритм анализирует эластичность спроса и находит оптимальную цену для максимизации выручки")
+    st.caption("Алгоритм оптимизирует ПРИБЫЛЬ с учётом себестоимости: (цена - себестоимость) × спрос")
     
     # Применяем умный алгоритм
     optimal_prices = calculate_optimal_prices(df)
@@ -117,11 +127,11 @@ with tab2:
     for _, row in optimal_prices.iterrows():
         product = row['product']
         product_df = df[df['product'] == product]
+        cost = row['cost']
         
         current_price = product_df['our_price'].mean()
         optimal_price = row['optimal_price']
         
-        # Прогнозируем продажи при новой цене (упрощённо)
         # Берём среднюю цену конкурента
         avg_competitor = product_df['competitor_price'].mean()
         
@@ -131,23 +141,36 @@ with tab2:
         model = LinearRegression()
         model.fit(X, y)
         
-        # Прогноз при текущей цене
-        current_sales = model.predict([[current_price, avg_competitor]])[0]
-        # Прогноз при оптимальной цене
-        optimal_sales = model.predict([[optimal_price, avg_competitor]])[0]
+        a = model.intercept_
+        b = model.coef_[0]
+        c_competitor = model.coef_[1]
         
-        current_revenue = current_price * max(0, current_sales)
-        optimal_revenue = optimal_price * max(0, optimal_sales)
+        # Функция прибыли
+        def calc_profit(price, comp_price, cost_val, a_val, b_val, c_val):
+            sales_pred = a_val + b_val * price + c_val * comp_price
+            return (price - cost_val) * max(0, sales_pred)
         
-        growth = ((optimal_revenue - current_revenue) / current_revenue * 100) if current_revenue > 0 else 0
+        # Текущая прибыль
+        current_profit = calc_profit(current_price, avg_competitor, cost, a, b, c_competitor)
+        # Прогнозируемая прибыль
+        optimal_profit = calc_profit(optimal_price, avg_competitor, cost, a, b, c_competitor)
+        
+        growth = ((optimal_profit - current_profit) / current_profit * 100) if current_profit > 0 else 0
+        
+        # Текущая и новая маржинальность
+        margin_current = (current_price - cost) / current_price * 100
+        margin_optimal = (optimal_price - cost) / optimal_price * 100
         
         results.append({
             'product': product,
+            'cost': round(cost, 2),
             'current_price': round(current_price, 2),
             'optimal_price': round(optimal_price, 2),
             'change_%': round((optimal_price - current_price) / current_price * 100, 1),
-            'current_revenue': round(current_revenue, 0),
-            'optimal_revenue': round(optimal_revenue, 0),
+            'margin_current_%': round(margin_current, 1),
+            'margin_optimal_%': round(margin_optimal, 1),
+            'current_profit': round(current_profit, 0),
+            'optimal_profit': round(optimal_profit, 0),
             'growth_%': round(growth, 1)
         })
     
@@ -157,24 +180,41 @@ with tab2:
     st.dataframe(results_df, use_container_width=True)
     
     # Итоговые метрики
-    total_current = results_df['current_revenue'].sum()
-    total_optimal = results_df['optimal_revenue'].sum()
-    total_growth = (total_optimal - total_current) / total_current * 100
+    total_current_profit = results_df['current_profit'].sum()
+    total_optimal_profit = results_df['optimal_profit'].sum()
+    total_growth = (total_optimal_profit - total_current_profit) / total_current_profit * 100
     
     col1, col2, col3 = st.columns(3)
-    col1.metric("Текущая выручка", f"{total_current:,.0f}")
-    col2.metric("Прогнозируемая выручка", f"{total_optimal:,.0f}")
+    col1.metric("Текущая прибыль", f"{total_current_profit:,.0f}")
+    col2.metric("Прогнозируемая прибыль", f"{total_optimal_profit:,.0f}")
     
     if total_growth > 0:
-        col3.metric("Рост выручки", f"+{total_growth:.1f}%", delta="📈 Положительный")
+        col3.metric("Рост прибыли", f"+{total_growth:.1f}%", delta="📈 Положительный")
     else:
-        col3.metric("Рост выручки", f"{total_growth:.1f}%", delta="⚠️ Требуется настройка")
+        col3.metric("Рост прибыли", f"{total_growth:.1f}%", delta="⚠️ Требуется настройка")
+    
+    # Дополнительная информация
+    with st.expander("ℹ️ Как работает алгоритм"):
+        st.markdown("""
+        **Формула оптимизации прибыли:**
+        **Оптимальная цена:**
+        
+**Где:**
+- `a` — базовый спрос
+- `b` — эластичность (отрицательная: чем выше цена, тем ниже спрос)
+- `c` — влияние цены конкурента
+
+**Ограничения:**
+- Цена не может быть ниже себестоимости + 10%
+- Цена не может быть выше 130% от максимальной исторической цены
+""")
 
 with tab3:
     st.subheader("Зависимость продаж от цены")
     
     product = st.selectbox("Выберите товар", df['product'].unique())
     product_df = df[df['product'] == product]
+    cost = product_df['cost'].iloc[0]
     
     fig, ax = plt.subplots(figsize=(10, 5))
     scatter = ax.scatter(product_df['our_price'], product_df['sales'], 
@@ -185,17 +225,18 @@ with tab3:
     p = np.poly1d(z)
     ax.plot(product_df['our_price'].sort_values(), 
             p(product_df['our_price'].sort_values()), 
-            "r--", alpha=0.8, label="Тренд (чем ниже цена, тем выше продажи)")
+            "r--", alpha=0.8, label="Тренд спроса")
+    
+    # Вертикальная линия себестоимости
+    ax.axvline(x=cost, color='green', linestyle='--', alpha=0.7, label=f'Себестоимость ({cost:.0f})')
     
     ax.set_xlabel("Наша цена")
     ax.set_ylabel("Продажи")
-    ax.set_title(f"{product}: эластичность спроса")
+    ax.set_title(f"{product}: эластичность спроса (себестоимость = {cost:.0f})")
     ax.legend()
     plt.colorbar(scatter, label='Цена конкурента')
     st.pyplot(fig)
     
-    st.caption("🔴 Красная линия — тренд: при снижении цены продажи растут")
+    st.caption("🔴 Красная линия — тренд спроса (чем ниже цена, тем выше продажи)")
+    st.caption("🟢 Зелёная линия — себестоимость (цена не может быть ниже)")
     st.caption("🔵 Синие точки — низкая цена конкурента, 🔴 Красные — высокая")
-
-st.markdown("---")
-st.caption("MVP умного динамического ценообразования на основе машинного обучения")
